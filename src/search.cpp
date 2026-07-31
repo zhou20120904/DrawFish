@@ -1523,10 +1523,6 @@ moves_loop:  // When in check, search starts here
     }
 
     // Step 21. Check for mate and stalemate
-    // All legal moves have been searched and if there are no legal moves, it
-    // must be a mate or a stalemate. If we are in a singular extension search then
-    // return a fail low score.
-
     assert(moveCount || !ss->inCheck || excludedMove || !MoveList<LEGAL>(pos).size());
 
     // Adjust best value for fail high cases
@@ -1534,7 +1530,7 @@ moves_loop:  // When in check, search starts here
         bestValue = (bestValue * depth + beta) / (depth + 1);
 
     if (!moveCount)
-        bestValue = excludedMove ? alpha : ss->inCheck ? mated_in(ss->ply) : VALUE_DRAW;
+        bestValue = excludedMove ? alpha : mated_in(ss->ply); // 无论是否被将军，无子可动直接判负！
 
     // If there is a move that produces search value greater than alpha,
     // we update the stats of searched moves.
@@ -1821,8 +1817,6 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     }
 
     // Step 9. Check for mate and stalemate
-    // All legal moves have been searched. A special case: if we are
-    // in check and no legal moves were found, it is checkmate.
     if (!moveCount)
     {
         if (ss->inCheck)  // Checkmate!
@@ -1831,12 +1825,9 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
             return mated_in(ss->ply);  // Plies to mate from the root
         }
 
-        // Only check for stalemate under specific conditions
-        Color us = pos.side_to_move();
-        if (!(pawn_single_push_bb(us, pos.pieces(us, PAWN)) & ~pos.pieces())
-            && !pos.non_pawn_material(us) && type_of(pos.captured_piece()) >= KNIGHT
-            && !MoveList<LEGAL>(pos).size())
-            bestValue = VALUE_DRAW;
+        // 逼和即胜逻辑：如果在 qsearch 中吃子导致对方没有任何合法走法，当前方（被逼和方）判负
+        if (!MoveList<LEGAL>(pos).size())
+            return mated_in(ss->ply);
     }
 
     if (!is_decisive(bestValue) && bestValue > beta)
