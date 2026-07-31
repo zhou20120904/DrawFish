@@ -133,9 +133,15 @@ struct RootMove {
     }
     void unset_bound_flags() { scoreLowerbound = scoreUpperbound = false; }
     bool operator==(const Move& m) const { return pv[0] == m; }
-    // Sort in descending order
+    // Sort by closeness to 0.00 (修改后：评估值绝对值越小/越接近0，越靠前)
     bool operator<(const RootMove& m) const {
-        return m.score != score ? m.score < score : m.previousScore < previousScore;
+        int devThis = std::abs(score);
+        int devM    = std::abs(m.score);
+
+        if (devThis != devM)
+            return devM > devThis; // 绝对值越小，排名越靠前
+
+        return std::abs(m.previousScore) > std::abs(previousScore);
     }
 
     u64     effort             = 0;
