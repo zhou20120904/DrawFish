@@ -382,63 +382,27 @@ bool Search::Worker::iterative_deepening() {
             optimism[us]  = 114 * avg / (std::abs(avg) + 85);
             optimism[~us] = -optimism[us];
 
-            // Start with a small aspiration window and, in the case of a fail
-            // high/low, re-search with a bigger window until we don't fail
-            // high/low anymore.
-            int failedHighCnt = 0;
+            // 禁用原版的渴望窗口，为零点逼近窗口做准备
+            alpha = -VALUE_INFINITE;
+            beta  = VALUE_INFINITE;
+
+            // 注意：这里去掉了 `int failedHighCnt = 0;` 以消除警告
             while (true)
             {
-                // Adjust the effective depth searched, but ensure at least one
-                // effective increment for every four searchAgain steps (see issue #2717).
                 Depth adjustedDepth =
-                  std::max(1, rootDepth - failedHighCnt - 3 * (searchAgainCounter + 1) / 4);
+                  std::max(1, rootDepth - 3 * (searchAgainCounter + 1) / 4);
                 rootDelta = beta - alpha;
                 bestValue = search<Root>(rootPos, ss, alpha, beta, adjustedDepth, false);
 
-                // Bring the best move to the front. It is critical that sorting
-                // is done with a stable algorithm because all the values but the
-                // first and eventually the new best one is set to -VALUE_INFINITE
-                // and we want to keep the same order for all the moves except the
-                // new PV that goes to the front. Note that in the case of MultiPV
-                // search the already searched PV lines are preserved.
                 std::stable_sort(rootMoves.begin() + pvIdx, rootMoves.begin() + pvLast);
 
-                // If search has been stopped, we break immediately. Sorting is
-                // safe because RootMoves is still valid, although it refers to
-                // the previous iteration.
                 if (threads.stop)
                     break;
 
-                // When failing high/low give some update before a re-search. To avoid
-                // excessive output that could hang GUIs like Fritz 19, only start
-                // at nodes > 10M (rather than depth N, which can be reached quickly)
-                if (mainThread && multiPV == 1 && (bestValue <= alpha || bestValue >= beta)
-                    && nodes > NODES_LIMIT_OUTPUT)
+                if (mainThread && multiPV == 1 && nodes > NODES_LIMIT_OUTPUT)
                     main_manager()->output_pv(*this, threads, tt, rootDepth);
 
-                // In case of failing low/high increase aspiration window and re-search,
-                // otherwise exit the loop.
-                if (bestValue <= alpha)
-                {
-                    beta  = alpha;
-                    alpha = std::max(bestValue - delta, -VALUE_INFINITE);
-
-                    failedHighCnt = 0;
-                    if (mainThread)
-                        mainThread->stopOnPonderhit = false;
-                }
-                else if (bestValue >= beta)
-                {
-                    alpha = std::max(beta - delta, alpha);
-                    beta  = std::min(bestValue + delta, VALUE_INFINITE);
-                    ++failedHighCnt;
-                }
-                else
-                    break;
-
-                delta += 47 * delta / 128;
-
-                assert(alpha >= -VALUE_INFINITE && beta <= VALUE_INFINITE);
+                break;
             }
 
             if (threads.stop && pvIdx)
@@ -1334,59 +1298,66 @@ moves_loop:  // When in check, search starts here
             r += r * 276 / (256 * depth + 268);
 
         // Step 17. Late moves reduction / extension (LMR)
+        bool doFullDepthSearch = false;
         if (depth >= 2 && moveCount > 1)
         {
-            // In general we want to cap the LMR depth search at newDepth, but when
-            // reduction is negative, we allow this move a limited search extension
-            // beyond the first move depth.
-            // To prevent problems when the max value is less than the min value,
-            // std::clamp has been replaced by a more robust implementation.
-            Depth d = std::max(1, std::min(newDepth - r / 1024, newDepth + 2)) + PvNode;
-
-            ss->reduction = newDepth - d;
-            value         = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha, d, true);
-            ss->reduction = 0;
-
-            // Do a full-depth search when reduced LMR search fails high
-            // (*Scaler) Shallower searches here don't scale well
-            if (value > alpha)
+            if (rootNode) 
             {
-                // Adjust full-depth search based on LMR results - if the result was
-                // good enough search deeper, if it was bad enough search shallower.
-                const bool doDeeperSearch    = d < newDepth && value > bestValue + 53;
-                const bool doShallowerSearch = value < bestValue + 8;
+                doFullDepthSearch = true; // 根节点跳过LMR，直接进入零点窗口
+            }
+            else 
+            {
+                Depth d = std::max(1, std::min(newDepth - r / 1024, newDepth + 2)) + PvNode;
+                ss->reduction = newDepth - d;
+                value         = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha, d, true);
+                ss->reduction = 0;
 
-                newDepth += doDeeperSearch - doShallowerSearch;
+                if (value > alpha)
+                {
+                    const bool doDeeperSearch    = d < newDepth && value > bestValue + 53;
+                    const bool doShallowerSearch = value < bestValue + 8;
+                    newDepth += doDeeperSearch - doShallowerSearch;
+                    if (newDepth > d)
+                        value = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha, newDepth, !cutNode);
+                    update_continuation_histories(ss, movedPiece, move.to_sq(), 1334);
+                }
+            }
+        }
+        else
+            doFullDepthSearch = !PvNode || moveCount > 1;
 
-                if (newDepth > d)
-                    value = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha, newDepth, !cutNode);
+        // Step 18. Full-depth search when LMR is skipped
+        if (doFullDepthSearch)
+        {
+            if (rootNode) 
+            {
+                // ✨ 核心黑科技：零点逼近窗口 ✨
+                Value zAlpha = -std::abs(bestValue);
+                Value zBeta  = std::abs(bestValue);
+                if (zAlpha + 1 >= zBeta) {
+                    value = VALUE_INFINITE; // 已经达到了完美的 0.00，跳过后续所有招法！
+                } else {
+                    // 【致命Bug修复点】必须为子节点分配合法的 PV 数组指针，否则发生 Segfault！
+                    (ss + 1)->pv = &pv;
+                    (ss + 1)->pv->clear();
 
-                // Post LMR continuation history updates
-                update_continuation_histories(ss, movedPiece, move.to_sq(), 1334);
+                    value = -search<PV>(pos, ss + 1, -zBeta, -zAlpha, newDepth, false);
+                }
+            }
+            else if (!PvNode || moveCount > 1)
+            {
+                if (!ttData.move) r += 1127;
+                value = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha,
+                                       newDepth - (r > 5234) - (r > 5487 && newDepth > 2), !cutNode);
             }
         }
 
-        // Step 18. Full-depth search when LMR is skipped
-        else if (!PvNode || moveCount > 1)
-        {
-            // Increase reduction if ttMove is not present
-            if (!ttData.move)
-                r += 1127;
-
-            // Note that if expected reduction is high, we reduce search depth here
-            value = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha,
-                                   newDepth - (r > 5234) - (r > 5487 && newDepth > 2), !cutNode);
-        }
-
-        // For PV nodes only, do a full PV search on the first move or after a fail high,
-        // otherwise let the parent node fail low with value <= alpha and try another move.
-        if (PvNode && (moveCount == 1 || value > alpha))
+        // 仅适用于第一步，或是非根节点发生替换时
+        if (PvNode && (moveCount == 1 || (!rootNode && value > alpha)))
         {
             (ss + 1)->pv = &pv;
             (ss + 1)->pv->clear();
 
-            // Extend move from transposition table if we are about to dive into qsearch.
-            // decisive score handling improves mate finding and retrograde analysis.
             if (move == ttData.move
                 && ((is_valid(ttData.value) && is_decisive(ttData.value) && ttData.depth > 0)
                     || ttData.depth > 1))
@@ -1395,124 +1366,92 @@ moves_loop:  // When in check, search starts here
             value = -search<PV>(pos, ss + 1, -beta, -alpha, newDepth, false);
         }
 
-        // Step 19. Undo move
+        // ==============================================================
+        // Step 19. Undo move 
+        // ==============================================================
         undo_move(pos, move);
 
         assert(value > -VALUE_INFINITE && value < VALUE_INFINITE);
 
+        // ==============================================================
         // Step 20. Check for a new best move
-        // Finished searching the move. If a stop occurred, the return value of
-        // the search cannot be trusted, and we return immediately without updating
-        // best move, principal variation nor transposition table.
+        // ==============================================================
         if (threads.stop.load(std::memory_order_relaxed))
             return VALUE_ZERO;
 
         if (rootNode)
         {
             RootMove& rm = *std::find(rootMoves.begin(), rootMoves.end(), move);
-
             rm.effort += nodes - nodeCount;
-
             u64 N      = nodes - nodeCount;
             u64 E_prev = std::max(u64(1), rm.effort - N);
 
-            // Dynamic EMA parameters for root move
             constexpr u64 Scale          = 32;
             constexpr u64 ChiNumerator   = 3;
             constexpr u64 ChiDenominator = 2;   // Chi = 3/2 = 1.5
             constexpr u64 MinWeight      = 12;  // 37.5% minimum weight
             constexpr u64 MaxWeight      = 24;  // 75% maximum weight
 
-            u64 w     = std::clamp((Scale * N * ChiDenominator)
-                                     / (N * ChiDenominator + ChiNumerator * E_prev),
-                                   MinWeight, MaxWeight);
+            u64 w     = std::clamp((Scale * N * ChiDenominator) / (N * ChiDenominator + ChiNumerator * E_prev), MinWeight, MaxWeight);
             u64 w_mss = std::min(w, u64(16));
             i64 v2    = i64(value) * std::abs(value);
 
-            if (rm.averageScore == -VALUE_INFINITE)
-                rm.averageScore = value;
-            else
-                rm.averageScore = Value((value * w + rm.averageScore * (Scale - w)) / Scale);
+            if (rm.averageScore == -VALUE_INFINITE) rm.averageScore = value;
+            else rm.averageScore = Value((value * w + rm.averageScore * (Scale - w)) / Scale);
 
-            if (rm.meanSquaredScore == -VALUE_INFINITE * VALUE_INFINITE)
-                rm.meanSquaredScore = value * std::abs(value);
-            else
-                rm.meanSquaredScore =
-                  Value((v2 * w_mss + int64_t(rm.meanSquaredScore) * (Scale - w_mss)) / Scale);
+            if (rm.meanSquaredScore == -VALUE_INFINITE * VALUE_INFINITE) rm.meanSquaredScore = value * std::abs(value);
+            else rm.meanSquaredScore = Value((v2 * w_mss + int64_t(rm.meanSquaredScore) * (Scale - w_mss)) / Scale);
 
-            // PV move or new best move?
-            if (moveCount == 1 || value > alpha)
+            // 根节点更新主线的条件变为 "绝对值更小"
+            if (moveCount == 1 || std::abs(value) < std::abs(bestValue))
             {
                 rm.score = rm.uciScore = value;
                 rm.selDepth            = selDepth;
                 rm.unset_bound_flags();
-
-                if (value >= beta)
-                {
-                    rm.scoreLowerbound = true;
-                    rm.uciScore        = beta;
-                }
-                else if (value <= alpha)
-                {
-                    rm.scoreUpperbound = true;
-                    rm.uciScore        = alpha;
-                }
-
                 rm.pv.resize(1);
 
                 assert((ss + 1)->pv);
-
                 for (Move pvMove : *(ss + 1)->pv)
                     rm.pv.push_back(pvMove);
 
-                // We record how often the best move has been changed in each iteration.
-                // This information is used for time management. In MultiPV mode,
-                // we must take care to only do this for the first PV line.
                 if (moveCount > 1 && !pvIdx)
                     ++bestMoveChanges;
             }
             else
-                // All other moves but the PV, are set to the lowest value: this
-                // is not a problem when sorting because the sort is stable and the
-                // move position in the list is preserved - just the PV is pushed up.
                 rm.score = -VALUE_INFINITE;
         }
 
-        // In case we have an alternative move equal in eval to the current bestmove,
-        // promote it to bestmove by pretending it just exceeds alpha (but not beta).
-        int inc = (value == bestValue && ss->ply + 2 >= rootDepth && (int(nodes) & 14) == 0
-                   && !is_win(std::abs(value) + 1));
+        // 根节点的 bestValue 基于绝对值进行比较，非根节点依然用大于号
+        bool isNewBest = rootNode ? (moveCount == 1 || std::abs(value) < std::abs(bestValue))
+                                  : (value > bestValue);
 
-        if (value + inc > bestValue)
+        if (isNewBest)
         {
             bestValue = value;
 
-            if (value + inc > alpha)
+            if (rootNode || value > alpha)
             {
                 bestMove = move;
 
-                if (PvNode && !rootNode)  // Update pv even in fail-high case
+                if (PvNode && !rootNode)  // 只有非根节点才在这里拼接 PV
                     ss->pv->update(move, (ss + 1)->pv);
 
-                if (value >= beta)
+                if (!rootNode && value >= beta)
                 {
-                    // (*Scaler) Infrequent and small updates scale well
                     ss->cutoffCnt += (extension < 2) || PvNode;
                     assert(value >= beta);  // Fail high
                     break;
                 }
 
-                // Reduce other moves if we have found at least one score improvement
                 if (depth > 3 && depth < 12 && !is_decisive(value))
                     depth -= 3;
 
                 assert(depth > 0);
-                alpha = value;  // Update alpha! Always alpha < beta
+                if (!rootNode)
+                    alpha = value;  // 仅对非根节点更新 alpha
             }
         }
 
-        // If the move is worse than some previously searched move,
-        // remember it, to update its stats later.
         if (move != bestMove && moveCount <= SEARCHEDLIST_CAPACITY)
         {
             if (capture)
@@ -1520,7 +1459,7 @@ moves_loop:  // When in check, search starts here
             else
                 quietsSearched.push_back(move);
         }
-    }
+    } // <--- 招法遍历 while 循环结束的地方
 
     // Step 21. Check for mate and stalemate
     // All legal moves have been searched and if there are no legal moves, it
