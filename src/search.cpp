@@ -1483,32 +1483,17 @@ moves_loop:  // When in check, search starts here
         int inc = (value == bestValue && ss->ply + 2 >= rootDepth && (int(nodes) & 14) == 0
                    && !is_win(std::abs(value) + 1));
 
-        if (value + inc > bestValue)
+        // 计算当前走法评估分距离 0.00 的偏差绝对值
+        int currentDev = std::abs(value);
+        int bestDev    = std::abs(bestValue);
+
+        // 目标：挑选最接近 0.00 的走法（绝对值越小越好）
+        if (currentDev < bestDev)
         {
             bestValue = value;
-
-            if (value + inc > alpha)
-            {
-                bestMove = move;
-
-                if (PvNode && !rootNode)  // Update pv even in fail-high case
-                    ss->pv->update(move, (ss + 1)->pv);
-
-                if (value >= beta)
-                {
-                    // (*Scaler) Infrequent and small updates scale well
-                    ss->cutoffCnt += (extension < 2) || PvNode;
-                    assert(value >= beta);  // Fail high
-                    break;
-                }
-
-                // Reduce other moves if we have found at least one score improvement
-                if (depth > 3 && depth < 12 && !is_decisive(value))
-                    depth -= 3;
-
-                assert(depth > 0);
-                alpha = value;  // Update alpha! Always alpha < beta
-            }
+            bestMove  = move;
+            // 只要比之前更接近 0.00，就更新 alpha 窗口
+            alpha = value; 
         }
 
         // If the move is worse than some previously searched move,
@@ -1523,6 +1508,10 @@ moves_loop:  // When in check, search starts here
     }
 
     // Step 21. Check for mate and stalemate
+    // All legal moves have been searched and if there are no legal moves, it
+    // must be a mate or a stalemate. If we are in a singular extension search then
+    // return a fail low score.
+
     assert(moveCount || !ss->inCheck || excludedMove || !MoveList<LEGAL>(pos).size());
 
     // Adjust best value for fail high cases
@@ -1530,7 +1519,7 @@ moves_loop:  // When in check, search starts here
         bestValue = (bestValue * depth + beta) / (depth + 1);
 
     if (!moveCount)
-        bestValue = excludedMove ? alpha : mated_in(ss->ply); // 无论是否被将军，无子可动直接判负！
+        bestValue = excludedMove ? alpha : ss->inCheck ? mated_in(ss->ply) : VALUE_DRAW;
 
     // If there is a move that produces search value greater than alpha,
     // we update the stats of searched moves.
@@ -1817,6 +1806,8 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     }
 
     // Step 9. Check for mate and stalemate
+    // All legal moves have been searched. A special case: if we are
+    // in check and no legal moves were found, it is checkmate.
     if (!moveCount)
     {
         if (ss->inCheck)  // Checkmate!
@@ -1825,9 +1816,12 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
             return mated_in(ss->ply);  // Plies to mate from the root
         }
 
-        // 逼和即胜逻辑：如果在 qsearch 中吃子导致对方没有任何合法走法，当前方（被逼和方）判负
-        if (!MoveList<LEGAL>(pos).size())
-            return mated_in(ss->ply);
+        // Only check for stalemate under specific conditions
+        Color us = pos.side_to_move();
+        if (!(pawn_single_push_bb(us, pos.pieces(us, PAWN)) & ~pos.pieces())
+            && !pos.non_pawn_material(us) && type_of(pos.captured_piece()) >= KNIGHT
+            && !MoveList<LEGAL>(pos).size())
+            bestValue = VALUE_DRAW;
     }
 
     if (!is_decisive(bestValue) && bestValue > beta)
