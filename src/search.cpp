@@ -1483,17 +1483,32 @@ moves_loop:  // When in check, search starts here
         int inc = (value == bestValue && ss->ply + 2 >= rootDepth && (int(nodes) & 14) == 0
                    && !is_win(std::abs(value) + 1));
 
-        // 计算当前走法评估分距离 0.00 的偏差绝对值
-        int currentDev = std::abs(value);
-        int bestDev    = std::abs(bestValue);
-
-        // 目标：挑选最接近 0.00 的走法（绝对值越小越好）
-        if (currentDev < bestDev)
+        if (value + inc > bestValue)
         {
             bestValue = value;
-            bestMove  = move;
-            // 只要比之前更接近 0.00，就更新 alpha 窗口
-            alpha = value; 
+
+            if (value + inc > alpha)
+            {
+                bestMove = move;
+
+                if (PvNode && !rootNode)  // Update pv even in fail-high case
+                    ss->pv->update(move, (ss + 1)->pv);
+
+                if (value >= beta)
+                {
+                    // (*Scaler) Infrequent and small updates scale well
+                    ss->cutoffCnt += (extension < 2) || PvNode;
+                    assert(value >= beta);  // Fail high
+                    break;
+                }
+
+                // Reduce other moves if we have found at least one score improvement
+                if (depth > 3 && depth < 12 && !is_decisive(value))
+                    depth -= 3;
+
+                assert(depth > 0);
+                alpha = value;  // Update alpha! Always alpha < beta
+            }
         }
 
         // If the move is worse than some previously searched move,
