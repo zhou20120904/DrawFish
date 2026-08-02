@@ -1792,7 +1792,7 @@ Config Tablebases::rank_root_moves(const OptionsMap&            options,
     config.probeDepth  = int(options["SyzygyProbeDepth"]);
     config.cardinality = int(options["SyzygyProbeLimit"]);
 
-    bool dtz_available = true;
+    // bool dtz_available = true;
 
     // Tables with fewer pieces than SyzygyProbeLimit are searched with
     // probeDepth == DEPTH_ZERO
@@ -1801,43 +1801,44 @@ Config Tablebases::rank_root_moves(const OptionsMap&            options,
         config.cardinality = MaxCardinality;
         config.probeDepth  = 0;
     }
-
-    if (config.cardinality >= pos.count<ALL_PIECES>() && !pos.can_castle(ANY_CASTLING))
-    {
-        // Use DTZ to rank the moves if checkmate is the only zeroing move
-        rankDTZ = rankDTZ || pos.dtz_is_dtm();
-
-        // Rank moves using DTZ tables, bail out if time_abort flags zeitnot
-        config.rootInTB =
-          root_probe(pos, rootMoves, options["Syzygy50MoveRule"], rankDTZ, time_abort);
-
-        if (!config.rootInTB && !time_abort())
-        {
-            // DTZ tables are missing; try to rank moves using WDL tables
-            dtz_available   = false;
-            config.rootInTB = root_probe_wdl(pos, rootMoves, options["Syzygy50MoveRule"]);
-        }
-    }
-
-    if (config.rootInTB)
-    {
-        // Sort moves according to TB rank
-        std::stable_sort(
-          rootMoves.begin(), rootMoves.end(),
-          [](const Search::RootMove& a, const Search::RootMove& b) { return a.tbRank > b.tbRank; });
-
-        // Probe during search only if DTZ is not available and we are winning
-        if (dtz_available || rootMoves[0].tbScore <= VALUE_DRAW)
-            config.cardinality = 0;
-    }
-    else
-    {
-        // Clean up if root_probe() and root_probe_wdl() have failed
-        for (auto& m : rootMoves)
-            m.tbRank = 0;
-    }
-
     return config;
+
+    // if (config.cardinality >= pos.count<ALL_PIECES>() && !pos.can_castle(ANY_CASTLING))
+    // {
+    //     // Use DTZ to rank the moves if checkmate is the only zeroing move
+    //     rankDTZ = rankDTZ || pos.dtz_is_dtm();
+
+    //     // Rank moves using DTZ tables, bail out if time_abort flags zeitnot
+    //     config.rootInTB =
+    //       root_probe(pos, rootMoves, options["Syzygy50MoveRule"], rankDTZ, time_abort);
+
+    //     if (!config.rootInTB && !time_abort())
+    //     {
+    //         // DTZ tables are missing; try to rank moves using WDL tables
+    //         dtz_available   = false;
+    //         config.rootInTB = root_probe_wdl(pos, rootMoves, options["Syzygy50MoveRule"]);
+    //     }
+    // }
+
+    // if (config.rootInTB)
+    // {
+    //     // Sort moves according to TB rank
+    //     std::stable_sort(
+    //       rootMoves.begin(), rootMoves.end(),
+    //       [](const Search::RootMove& a, const Search::RootMove& b) { return a.tbRank > b.tbRank; });
+
+    //     // Probe during search only if DTZ is not available and we are winning
+    //     if (dtz_available || rootMoves[0].tbScore <= VALUE_DRAW)
+    //         config.cardinality = 0;
+    // }
+    // else
+    // {
+    //     // Clean up if root_probe() and root_probe_wdl() have failed
+    //     for (auto& m : rootMoves)
+    //         m.tbRank = 0;
+    // }
+
+    // return config;
 }
 }  // namespace Stockfish
 
