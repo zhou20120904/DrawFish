@@ -1,4 +1,4 @@
-Inspiration from nmrugg/Drawfish (shout out to them!), but ported to the latest version. Here's their original README (may not work):
+Inspiration from nmrugg/Drawfish (shout out to them!), but ported to the latest version. For compile instructions, refer to the original Stockfish documents. Here's their original README (may not work):
 # Drawfish
 
 ### The chess engine that thinks stalemate is a win
