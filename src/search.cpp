@@ -1331,18 +1331,16 @@ moves_loop:  // When in check, search starts here
         {
             if (rootNode) 
             {
-                // ✨ 核心黑科技：零点逼近窗口 ✨
-                Value zAlpha = -std::abs(bestValue);
-                Value zBeta  = std::abs(bestValue);
-                if (zAlpha + 1 >= zBeta) {
-                    value = VALUE_INFINITE; // 已经达到了完美的 0.00，跳过后续所有招法！
-                } else {
-                    // 【致命Bug修复点】必须为子节点分配合法的 PV 数组指针，否则发生 Segfault！
-                    (ss + 1)->pv = &pv;
-                    (ss + 1)->pv->clear();
+                // ✨ 修复后的零点逼近窗口 ✨
+                // 1. 确保必须为子节点分配正确的 PV 容器
+                (ss + 1)->pv = &pv;
+                (ss + 1)->pv->clear();
 
-                    value = -search<PV>(pos, ss + 1, -zBeta, -zAlpha, newDepth, false);
-                }
+                // 2. 确保搜索窗口严格合法 (Alpha < Beta)，窗口下限宽度设为 1
+                Value M = std::max(1, std::abs(bestValue));
+                
+                // 3. 在 [-M, M] 窗口内搜索：探测该走法是否能产生比当前更接近 0.00 的局面
+                value = -search<PV>(pos, ss + 1, -M, M, newDepth, false);
             }
             else if (!PvNode || moveCount > 1)
             {
@@ -1388,9 +1386,9 @@ moves_loop:  // When in check, search starts here
 
             constexpr u64 Scale          = 32;
             constexpr u64 ChiNumerator   = 3;
-            constexpr u64 ChiDenominator = 2;   // Chi = 3/2 = 1.5
-            constexpr u64 MinWeight      = 12;  // 37.5% minimum weight
-            constexpr u64 MaxWeight      = 24;  // 75% maximum weight
+            constexpr u64 ChiDenominator = 2;
+            constexpr u64 MinWeight      = 12;
+            constexpr u64 MaxWeight      = 24;
 
             u64 w     = std::clamp((Scale * N * ChiDenominator) / (N * ChiDenominator + ChiNumerator * E_prev), MinWeight, MaxWeight);
             u64 w_mss = std::min(w, u64(16));
@@ -1402,8 +1400,8 @@ moves_loop:  // When in check, search starts here
             if (rm.meanSquaredScore == -VALUE_INFINITE * VALUE_INFINITE) rm.meanSquaredScore = value * std::abs(value);
             else rm.meanSquaredScore = Value((v2 * w_mss + int64_t(rm.meanSquaredScore) * (Scale - w_mss)) / Scale);
 
-            // 根节点更新主线的条件变为 "绝对值更小"
-            if (moveCount == 1 || std::abs(value) < std::abs(bestValue))
+            // 【修改点 A】：使用非对称比较判定是否刷新根节点主线走法
+            if (moveCount == 1 || is_better_score(value, bestValue))
             {
                 rm.score = rm.uciScore = value;
                 rm.selDepth            = selDepth;
@@ -1421,8 +1419,8 @@ moves_loop:  // When in check, search starts here
                 rm.score = -VALUE_INFINITE;
         }
 
-        // 根节点的 bestValue 基于绝对值进行比较，非根节点依然用大于号
-        bool isNewBest = rootNode ? (moveCount == 1 || std::abs(value) < std::abs(bestValue))
+        // 【修改点 B】：根节点使用 is_better_score，非根节点保留原版极大极小比较
+        bool isNewBest = rootNode ? (moveCount == 1 || is_better_score(value, bestValue))
                                   : (value > bestValue);
 
         if (isNewBest)
@@ -1433,13 +1431,13 @@ moves_loop:  // When in check, search starts here
             {
                 bestMove = move;
 
-                if (PvNode && !rootNode)  // 只有非根节点才在这里拼接 PV
+                if (PvNode && !rootNode)
                     ss->pv->update(move, (ss + 1)->pv);
 
                 if (!rootNode && value >= beta)
                 {
                     ss->cutoffCnt += (extension < 2) || PvNode;
-                    assert(value >= beta);  // Fail high
+                    assert(value >= beta);
                     break;
                 }
 
@@ -1448,7 +1446,7 @@ moves_loop:  // When in check, search starts here
 
                 assert(depth > 0);
                 if (!rootNode)
-                    alpha = value;  // 仅对非根节点更新 alpha
+                    alpha = value;
             }
         }
 
