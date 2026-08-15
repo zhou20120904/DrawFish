@@ -346,21 +346,34 @@ void ThreadPool::start_thinking(const OptionsMap&  options,
     main_thread()->start_searching();
 }
 
+// 辅助函数：计算分值相对于“和棋目标”的惩罚值（越小越优）
+static inline int draw_penalty(Value v) {
+    if (v >= 0)
+        return int(v);                     // 正分：偏离 0 分多少就罚多少 (0 ~ 32000)
+    else
+        return 1'000'000 + std::abs(int(v)); // 负分：基础惩罚一百万，杜绝负分逆袭正分
+}
+
 Thread* ThreadPool::get_best_thread() const {
 
     Thread* bestThread = threads.front().get();
-    Value   minScore   = VALUE_INFINITE;
+    int     maxPenalty = 0;
+
+    // 1. 获取所有线程走法中的最大惩罚值
+    for (auto&& th : threads)
+        maxPenalty = std::max(maxPenalty, draw_penalty(th->worker->rootMoves[0].score));
 
     std::unordered_map<Move, i64, Move::MoveHash> votes(
       2 * std::min(size(), bestThread->worker->rootMoves.size()));
 
+    // 2. 投票：惩罚越小（越符合和棋偏好），票数越多
     for (auto&& th : threads)
-        minScore = std::min(minScore, th->worker->rootMoves[0].score);
+    {
+        int p = draw_penalty(th->worker->rootMoves[0].score);
+        votes[th->worker->rootMoves[0].pv[0]] += (maxPenalty - p) + 14;
+    }
 
-    // Vote according to score, and select the best thread
-    for (auto&& th : threads)
-        votes[th->worker->rootMoves[0].pv[0]] += th->worker->rootMoves[0].score - minScore + 14;
-
+    // 3. 决选出全局最佳走法
     for (auto&& th : threads)
     {
         const auto& bestThreadMove = bestThread->worker->rootMoves[0];
@@ -369,31 +382,17 @@ Thread* ThreadPool::get_best_thread() const {
         const auto bestThreadMoveVote = votes[bestThreadMove.pv[0]];
         const auto newThreadMoveVote  = votes[newThreadMove.pv[0]];
 
-        // Aborted (d1) searches may lead to inexact win (or loss) scores.
-        const bool bestThreadDecisive = bestThreadMove.score != -VALUE_INFINITE
-                                     && is_decisive(bestThreadMove.score)
-                                     && !bestThreadMove.score_is_bound();
-        const bool newThreadDecisive = newThreadMove.score != -VALUE_INFINITE
-                                    && is_decisive(newThreadMove.score)
-                                    && !newThreadMove.score_is_bound();
+        Value bestScore = bestThreadMove.score;
+        Value newScore  = newThreadMove.score;
 
-        if (bestThreadDecisive)
+        // 判定规则：选票多者胜；选票相同时 is_better_score 胜；再相同时深层 PV 胜
+        if (newThreadMoveVote > bestThreadMoveVote
+            || (newThreadMoveVote == bestThreadMoveVote
+                && (Search::is_better_score(newScore, bestScore)
+                    || (newScore == bestScore && newThreadMove.pv.size() > bestThreadMove.pv.size()))))
         {
-            // Make sure we pick the shortest mate / TB conversion.
-            if (newThreadDecisive && std::abs(newThreadMove.score) > std::abs(bestThreadMove.score))
-            {
-                assert((is_win(bestThreadMove.score) && is_win(newThreadMove.score))
-                       || (is_loss(bestThreadMove.score) && is_loss(newThreadMove.score)));
-
-                bestThread = th.get();
-            }
-        }
-        else if (newThreadDecisive
-                 || (!is_loss(newThreadMove.score)
-                     && (newThreadMoveVote > bestThreadMoveVote
-                         || (newThreadMoveVote == bestThreadMoveVote
-                             && newThreadMove.pv.size() > bestThreadMove.pv.size()))))
             bestThread = th.get();
+        }
     }
 
     return bestThread;
