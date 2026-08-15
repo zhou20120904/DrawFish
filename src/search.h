@@ -119,6 +119,19 @@ struct Stack {
     int                         reduction;
 };
 
+// ✨ 在 struct RootMove 上方添加全局可见的辅助比较函数 ✨
+inline bool is_better_score(Value a, Value b) {
+    // 1. 正负符号不同：任何非负分 (>= 0) 绝对优于任何负分 (< 0)
+    if ((a >= 0) != (b >= 0))
+        return a >= 0;
+
+    // 2. 双方都是非负分 (>= 0)：越接近 0.00 越好 (0 最好)
+    if (a >= 0)
+        return a < b;
+
+    // 3. 双方都是负分 (< 0)：亏损越小越好 (-10 优于 -100，顽强防守)
+    return a > b;
+}
 
 // RootMove struct is used for moves at the root of the tree. For each root move
 // we store a score and a PV (really a refutation in the case of moves which
@@ -134,14 +147,13 @@ struct RootMove {
     void unset_bound_flags() { scoreLowerbound = scoreUpperbound = false; }
     bool operator==(const Move& m) const { return pv[0] == m; }
     // Sort by closeness to 0.00 (修改后：评估值绝对值越小/越接近0，越靠前)
+
+    // 根节点走法排序：使得 std::stable_sort 将最理想的走法排在 rootMoves[0]
     bool operator<(const RootMove& m) const {
-        int devThis = std::abs(score);
-        int devM    = std::abs(m.score);
+        if (score != m.score)
+            return is_better_score(score, m.score);
 
-        if (devThis != devM)
-            return devM > devThis; // 绝对值越小，排名越靠前
-
-        return std::abs(m.previousScore) > std::abs(previousScore);
+        return is_better_score(previousScore, m.previousScore);
     }
 
     u64     effort             = 0;
