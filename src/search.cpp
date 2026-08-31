@@ -1419,8 +1419,7 @@ moves_loop:  // When in check, search starts here
                 rm.score = -VALUE_INFINITE;
         }
 
-        // 【修改点 B】：根节点使用 is_better_score，非根节点保留原版极大极小比较
-        bool isNewBest = rootNode ? (moveCount == 1 || is_better_score(value, bestValue))
+        bool isNewBest = rootNode ? (moveCount == 1 || std::abs(value) < std::abs(bestValue))
                                   : (value > bestValue);
 
         if (isNewBest)
