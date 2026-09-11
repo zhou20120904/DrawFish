@@ -1299,29 +1299,23 @@ moves_loop:  // When in check, search starts here
 
         // Step 17. Late moves reduction / extension (LMR)
         bool doFullDepthSearch = false;
-        if (depth >= 2 && moveCount > 1)
+        if (depth >= 2 && moveCount > 1 && !capture)
         {
-            if (rootNode) 
-            {
-                doFullDepthSearch = true; // 根节点跳过LMR，直接进入零点窗口
-            }
-            else 
-            {
-                Depth d = std::max(1, std::min(newDepth - r / 1024, newDepth + 2)) + PvNode;
-                ss->reduction = newDepth - d;
-                value         = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha, d, true);
-                ss->reduction = 0;
+            Depth d = std::max(1, std::min(newDepth - r / 1024, newDepth + 2)) + PvNode;
+            ss->reduction = newDepth - d;
+            value         = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha, d, true);
+            ss->reduction = 0;
 
-                if (value > alpha)
-                {
-                    const bool doDeeperSearch    = d < newDepth && value > bestValue + 53;
-                    const bool doShallowerSearch = value < bestValue + 8;
-                    newDepth += doDeeperSearch - doShallowerSearch;
-                    if (newDepth > d)
-                        value = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha, newDepth, !cutNode);
-                    update_continuation_histories(ss, movedPiece, move.to_sq(), 1334);
-                }
+            if (value > alpha)
+            {
+                const bool doDeeperSearch    = d < newDepth && value > bestValue + 53;
+                const bool doShallowerSearch = value < bestValue + 8;
+                newDepth += doDeeperSearch - doShallowerSearch;
+                if (newDepth > d)
+                    value = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha, newDepth, !cutNode);
+                update_continuation_histories(ss, movedPiece, move.to_sq(), 1334);
             }
+            doFullDepthSearch = (value > alpha && r != 0);
         }
         else
             doFullDepthSearch = !PvNode || moveCount > 1;
@@ -1331,16 +1325,16 @@ moves_loop:  // When in check, search starts here
         {
             if (rootNode) 
             {
-                // ✨ 修复后的零点逼近窗口 ✨
-                // 1. 确保必须为子节点分配正确的 PV 容器
-                (ss + 1)->pv = &pv;
-                (ss + 1)->pv->clear();
-
-                // 2. 确保搜索窗口严格合法 (Alpha < Beta)，窗口下限宽度设为 1
-                Value M = std::max(1, std::abs(bestValue));
-                
-                // 3. 在 [-M, M] 窗口内搜索：探测该走法是否能产生比当前更接近 0.00 的局面
-                value = -search<PV>(pos, ss + 1, -M, M, newDepth, false);
+                // ✨ 核心黑科技：在根节点使用零点逼近窗口 ✨
+                Value zAlpha = -std::abs(bestValue);
+                Value zBeta  = std::abs(bestValue);
+                if (zAlpha + 1 >= zBeta) {
+                    value = VALUE_NONE; // 已经达到了完美的 0.00，强行跳过后续搜索！
+                } else {
+                    (ss + 1)->pv = &pv;
+                    (ss + 1)->pv->clear();
+                    value = -search<PV>(pos, ss + 1, -zBeta, -zAlpha, newDepth, false);
+                }
             }
             else if (!PvNode || moveCount > 1)
             {
@@ -1365,9 +1359,12 @@ moves_loop:  // When in check, search starts here
         }
 
         // ==============================================================
-        // Step 19. Undo move 
+        // 【必须保留】Step 19. Undo move 
         // ==============================================================
         undo_move(pos, move);
+
+        // 修复之前 value = VALUE_INFINITE 导致的断言崩溃
+        if (value == VALUE_NONE) continue;
 
         assert(value > -VALUE_INFINITE && value < VALUE_INFINITE);
 
@@ -1386,9 +1383,9 @@ moves_loop:  // When in check, search starts here
 
             constexpr u64 Scale          = 32;
             constexpr u64 ChiNumerator   = 3;
-            constexpr u64 ChiDenominator = 2;
-            constexpr u64 MinWeight      = 12;
-            constexpr u64 MaxWeight      = 24;
+            constexpr u64 ChiDenominator = 2;   // Chi = 3/2 = 1.5
+            constexpr u64 MinWeight      = 12;  // 37.5% minimum weight
+            constexpr u64 MaxWeight      = 24;  // 75% maximum weight
 
             u64 w     = std::clamp((Scale * N * ChiDenominator) / (N * ChiDenominator + ChiNumerator * E_prev), MinWeight, MaxWeight);
             u64 w_mss = std::min(w, u64(16));
@@ -1400,8 +1397,8 @@ moves_loop:  // When in check, search starts here
             if (rm.meanSquaredScore == -VALUE_INFINITE * VALUE_INFINITE) rm.meanSquaredScore = value * std::abs(value);
             else rm.meanSquaredScore = Value((v2 * w_mss + int64_t(rm.meanSquaredScore) * (Scale - w_mss)) / Scale);
 
-            // 【修改点 A】：使用非对称比较判定是否刷新根节点主线走法
-            if (moveCount == 1 || is_better_score(value, bestValue))
+            // 根节点更新主线的条件变为 "绝对值更小"
+            if (moveCount == 1 || std::abs(value) < std::abs(bestValue))
             {
                 rm.score = rm.uciScore = value;
                 rm.selDepth            = selDepth;
@@ -1419,6 +1416,7 @@ moves_loop:  // When in check, search starts here
                 rm.score = -VALUE_INFINITE;
         }
 
+        // 根节点的 bestValue 基于绝对值进行比较，非根节点依然用大于号
         bool isNewBest = rootNode ? (moveCount == 1 || std::abs(value) < std::abs(bestValue))
                                   : (value > bestValue);
 
@@ -1430,13 +1428,13 @@ moves_loop:  // When in check, search starts here
             {
                 bestMove = move;
 
-                if (PvNode && !rootNode)
+                if (PvNode && !rootNode)  // 只有非根节点才在这里拼接 PV
                     ss->pv->update(move, (ss + 1)->pv);
 
                 if (!rootNode && value >= beta)
                 {
                     ss->cutoffCnt += (extension < 2) || PvNode;
-                    assert(value >= beta);
+                    assert(value >= beta);  // Fail high
                     break;
                 }
 
@@ -1445,7 +1443,7 @@ moves_loop:  // When in check, search starts here
 
                 assert(depth > 0);
                 if (!rootNode)
-                    alpha = value;
+                    alpha = value;  // 仅对非根节点更新 alpha
             }
         }
 
