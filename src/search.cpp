@@ -534,10 +534,29 @@ bool Search::Worker::iterative_deepening() {
         {
             u64 nodesEffort = rootMoves[0].effort * 100000 / std::max(u64(1), u64(nodes));
 
-            double fallingEval = (11.48 + 2.30 * (mainThread->bestPreviousAverageScore - bestValue)
-                                  + 1.1 * (mainThread->iterValue[iterIdx] - bestValue))
-                               / 100.0;
-            fallingEval = std::clamp(fallingEval, 0.576, 1.728);
+            // ==============================================================
+            // ✨ 专属定制：零点偏离度时间管理 (Zero-Deviation Time Control)
+            // ==============================================================
+            int currentDev = std::abs(bestValue);
+            int prevDev    = std::abs(mainThread->bestPreviousScore == VALUE_INFINITE ? 0 : mainThread->bestPreviousScore);
+
+            double zeroTimeFactor = 1.0;
+
+            if (currentDev <= 5)
+            {
+                // 1. 完美锁定 0.00：快速落子（时间打 5.5 折），大量积累棋钟时间
+                zeroTimeFactor = 0.55;
+            }
+            else if (currentDev > prevDev)
+            {
+                // 2. 局面失衡，脱离 0.00 掌控：触发恐慌，延长思考时间寻找挽救机会（最高 1.8 倍）
+                zeroTimeFactor = std::clamp(1.0 + (currentDev - prevDev) / 40.0, 1.0, 1.8);
+            }
+            else
+            {
+                // 3. 正在收敛回 0.00 的正常状态：略微加速出招
+                zeroTimeFactor = 0.85;
+            }
 
             // If the bestMove is stable over several iterations, reduce time accordingly
             timeReduction = std::clamp(
@@ -552,7 +571,8 @@ bool Search::Worker::iterative_deepening() {
             double highBestMoveEffort = std::clamp(
               interpolate(i64(nodesEffort), i64(75800), i64(104510), 0.969, 0.714), 0.693, 0.838);
 
-            double totalTime = mainThread->tm.optimum() * fallingEval * reduction
+            // 将 fallingEval 替换为 zeroTimeFactor
+            double totalTime = mainThread->tm.optimum() * zeroTimeFactor * reduction
                              * bestMoveInstability * highBestMoveEffort;
 
             if (rootMoves.size() == 1)
