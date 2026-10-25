@@ -466,10 +466,8 @@ bool Search::Worker::iterative_deepening() {
                 break;
         }
 
-        const bool forgottenMate = lastBestMoveScore != -VALUE_INFINITE
-                                && is_mate_or_mated(lastBestMoveScore)
-                                && (std::abs(rootMoves[0].score) < std::abs(lastBestMoveScore)
-                                    || rootMoves[0].score_is_bound());
+        // Drawfish: Always give up potential mate
+        const bool forgottenMate = false;
 
         if (!threads.stop)
         {
