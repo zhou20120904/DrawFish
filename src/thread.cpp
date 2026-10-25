@@ -357,39 +357,66 @@ static inline int draw_penalty(Value v) {
 Thread* ThreadPool::get_best_thread() const {
 
     Thread* bestThread = threads.front().get();
-    int     maxPenalty = 0;
 
-    // 1. 获取所有线程走法中的最大惩罚值
-    for (auto&& th : threads)
-        maxPenalty = std::max(maxPenalty, draw_penalty(th->worker->rootMoves[0].score));
+    std::unordered_map<Move, i64, Move::MoveHash> votes;
 
-    std::unordered_map<Move, i64, Move::MoveHash> votes(
-      2 * std::min(size(), bestThread->worker->rootMoves.size()));
-
-    // 2. 投票：惩罚越小（越符合和棋偏好），票数越多
+    // 1. 反比例衰减投票：每个线程根据偏差独立贡献票数，引入深度加权
     for (auto&& th : threads)
     {
-        int p = draw_penalty(th->worker->rootMoves[0].score);
-        votes[th->worker->rootMoves[0].pv[0]] += (maxPenalty - p) + 14;
+        if (th->worker->rootMoves.empty())
+            continue;
+
+        Value score = th->worker->rootMoves[0].score;
+        if (score == -VALUE_INFINITE)
+            continue;
+
+        int p = draw_penalty(score); // 离 0.00 的绝对偏差 abs(score)
+        int d = std::max(1, int(th->worker->rootDepth));
+
+        // ✨ 核心数学模型：反比例急速衰减
+        // 越接近 0.00 票数呈指数级聚集；偏离稍大票数断崖下跌；杀局(32000)票数无限趋近于0
+        i64 voteScore = (i64(d) * 100000) / (p + 14);
+
+        votes[th->worker->rootMoves[0].pv[0]] += voteScore;
     }
 
-    // 3. 决选出全局最佳走法
+    // 2. 选出总得票最高的最佳走法线程
     for (auto&& th : threads)
     {
+        if (th->worker->rootMoves.empty())
+            continue;
+
+        if (bestThread->worker->rootMoves.empty())
+        {
+            bestThread = th.get();
+            continue;
+        }
+
         const auto& bestThreadMove = bestThread->worker->rootMoves[0];
         const auto& newThreadMove  = th->worker->rootMoves[0];
+
+        if (newThreadMove.score == -VALUE_INFINITE)
+            continue;
+        if (bestThreadMove.score == -VALUE_INFINITE)
+        {
+            bestThread = th.get();
+            continue;
+        }
 
         const auto bestThreadMoveVote = votes[bestThreadMove.pv[0]];
         const auto newThreadMoveVote  = votes[newThreadMove.pv[0]];
 
-        Value bestScore = bestThreadMove.score;
-        Value newScore  = newThreadMove.score;
+        int bestPenalty = draw_penalty(bestThreadMove.score);
+        int newPenalty  = draw_penalty(newThreadMove.score);
 
-        // 判定规则：选票多者胜；选票相同时 is_better_score 胜；再相同时深层 PV 胜
+        // 裁决规则：
+        // 1. 得票高者胜（最受群体共识支持且靠近 0.00 的走法）
+        // 2. 票数相同时，单体偏差更小（更精确靠 0）者胜
+        // 3. 偏差再相同时，推演主线更长（更深远）者胜
         if (newThreadMoveVote > bestThreadMoveVote
             || (newThreadMoveVote == bestThreadMoveVote
-                && (Search::is_better_score(newScore, bestScore)
-                    || (newScore == bestScore && newThreadMove.pv.size() > bestThreadMove.pv.size()))))
+                && (newPenalty < bestPenalty
+                    || (newPenalty == bestPenalty && newThreadMove.pv.size() > bestThreadMove.pv.size()))))
         {
             bestThread = th.get();
         }
@@ -397,7 +424,6 @@ Thread* ThreadPool::get_best_thread() const {
 
     return bestThread;
 }
-
 
 // Start non-main threads.
 // Will be invoked by main thread after it has started searching.
