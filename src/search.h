@@ -121,16 +121,8 @@ struct Stack {
 
 // ✨ 在 struct RootMove 上方添加全局可见的辅助比较函数 ✨
 inline bool is_better_score(Value a, Value b) {
-    // 1. 正负符号不同：任何非负分 (>= 0) 绝对优于任何负分 (< 0)
-    if ((a >= 0) != (b >= 0))
-        return a >= 0;
-
-    // 2. 双方都是非负分 (>= 0)：越接近 0.00 越好 (0 最好)
-    if (a >= 0)
-        return a < b;
-
-    // 3. 双方都是负分 (< 0)：亏损越小越好 (-10 优于 -100，顽强防守)
-    return a > b;
+    // 纯粹以距离 0.00 的物理距离为唯一准绳，无论正负
+    return std::abs(a) < std::abs(b);
 }
 
 // RootMove struct is used for moves at the root of the tree. For each root move
