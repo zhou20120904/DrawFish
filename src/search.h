@@ -23,6 +23,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <memory>
