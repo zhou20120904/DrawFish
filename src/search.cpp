@@ -581,9 +581,7 @@ bool Search::Worker::iterative_deepening() {
 
             // Stop the search if we have exceeded totalTime or maximum time,
             // or if we know that there are no better moves in the analysed line(s)
-            if (elapsedTime > std::min(totalTime, double(mainThread->tm.maximum()))
-                || rootMoves[multiPV - 1].score >= mate_in(3) || rootMoves[0].score == mated_in(2))
-            {
+            if (elapsedTime > std::min(totalTime, double(mainThread->tm.maximum()))){
                 // If we are allowed to ponder do not stop the search now but
                 // keep pondering until the GUI sends "ponderhit" or "stop".
                 if (mainThread->ponder)
