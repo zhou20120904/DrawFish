@@ -49,8 +49,24 @@
 #include "types.h"
 #include "uci.h"
 #include "ucioption.h"
+// #include "tune.h"
 
 namespace Stockfish {
+
+// ==============================================================
+// ✨ Drawfish 专属：SPSA 优化后的零点时间管理参数
+// ==============================================================
+int ZeroTimeNormalPercent = 57;   // 稳居 0.00 时的用时比例 (57%)
+int ZeroTimePanicScale    = 42;   // 失衡时的恐慌倍率基数
+int InstabilitySlopePermil = 285; // 动荡惩罚斜率 (28.5%)
+int OptimismScale = 12;           // 微弱的动态防守活性偏置
+
+
+// // 用 Stockfish 官方的 TUNE 宏将其暴露为 UCI 选项
+// TUNE(SetRange(20, 100), ZeroTimeNormalPercent);
+// TUNE(SetRange(10, 100), ZeroTimePanicScale);
+// TUNE(SetRange(0, 1000), InstabilitySlopePermil);
+// TUNE(SetRange(0, 150), OptimismScale);
 
 static constexpr std::array<int, 16> lmrDivisor = {3637, 2787, 2761, 2939, 3171, 3347, 3147, 2762,
                                                    2772, 3106, 3107, 3060, 3112, 2991, 3090, 3542};
@@ -379,7 +395,7 @@ bool Search::Worker::iterative_deepening() {
             beta      = std::min(avg + delta, VALUE_INFINITE);
 
             // Adjust optimism based on root move's averageScore
-            optimism[us]  = 114 * avg / (std::abs(avg) + 85);
+            optimism[us]  = OptimismScale * avg / (std::abs(avg) + 85);
             optimism[~us] = -optimism[us];
 
             // 禁用原版的渴望窗口，为零点逼近窗口做准备
@@ -543,12 +559,12 @@ bool Search::Worker::iterative_deepening() {
             if (currentDev <= 5)
             {
                 // 1. 完美锁定 0.00：快速落子（时间打 5.5 折），大量积累棋钟时间
-                zeroTimeFactor = 0.55;
+                zeroTimeFactor = double(ZeroTimeNormalPercent) / 100.0;
             }
             else if (currentDev > prevDev)
             {
                 // 2. 局面失衡，脱离 0.00 掌控：触发恐慌，延长思考时间寻找挽救机会（最高 1.8 倍）
-                zeroTimeFactor = std::clamp(1.0 + (currentDev - prevDev) / 40.0, 1.0, 1.8);
+                zeroTimeFactor = std::clamp(1.0 + (currentDev - prevDev) / double(ZeroTimePanicScale), 1.0, 1.8);
             }
             else
             {
@@ -564,7 +580,7 @@ bool Search::Worker::iterative_deepening() {
             double reduction =
               (1.468 + mainThread->previousTimeReduction) / (2.284 * timeReduction);
 
-            double bestMoveInstability = 1.077 + 2.229 * totBestMoveChanges / threads.size();
+            double bestMoveInstability = 1.077 + (double(InstabilitySlopePermil) / 1000.0) * totBestMoveChanges / threads.size();
 
             double highBestMoveEffort = std::clamp(
               interpolate(i64(nodesEffort), i64(75800), i64(104510), 0.969, 0.714), 0.693, 0.838);
