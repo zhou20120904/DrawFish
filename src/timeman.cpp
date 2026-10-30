@@ -24,8 +24,18 @@
 
 #include "search.h"
 #include "ucioption.h"
+// #include "tune.h"
+
 
 namespace Stockfish {
+
+// ==============================================================
+// ✨ Drawfish 专属：SPSA 优化后的防超时与极限算力边界
+// ==============================================================
+int MaxScaleCapPercent = 219; // 危机时刻最高允许思考 2.19 倍时间
+int MaxTimePercent     = 739; // 单步最高允许吃掉 73.9% 的剩余时间
+// TUNE(SetRange(120, 300), MaxScaleCapPercent);
+// TUNE(SetRange(50, 900), MaxTimePercent);
 
 TimePoint TimeManagement::optimum() const { return optimumTime; }
 TimePoint TimeManagement::maximum() const { return maximumTime; }
@@ -114,7 +124,7 @@ void TimeManagement::init(Search::LimitsType& limits,
                             0.19404 * limits.time[us] / timeLeft)
                  * originalTimeAdjust;
 
-        maxScale = std::min(6.873, maxConstant + ply / 12.352);
+        maxScale = std::min(double(MaxScaleCapPercent) / 100.0, maxConstant + ply / 12.352);
     }
 
     // x moves in y seconds (+ z increment)
@@ -127,7 +137,7 @@ void TimeManagement::init(Search::LimitsType& limits,
     // Limit the maximum possible time for this move
     optimumTime = TimePoint(std::max(1.0, optScale * timeLeft));
     maximumTime =
-      TimePoint(std::max(double(optimumTime), std::min(0.8097 * limits.time[us] - moveOverhead,
+      TimePoint(std::max(double(optimumTime), std::min(double(MaxTimePercent) / 1000.0 * limits.time[us] - moveOverhead,
                                                        maxScale * optimumTime)));
 
     if (options["Ponder"])
